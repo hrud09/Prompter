@@ -14,6 +14,7 @@ class PromptsController extends ChangeNotifier {
 
   List<Prompt> _prompts = const <Prompt>[];
   String _query = '';
+  String? _groupFilter;
   bool _isLoading = true;
   String? _errorMessage;
   Timer? _debounce;
@@ -22,6 +23,8 @@ class PromptsController extends ChangeNotifier {
   List<Prompt> get prompts => _prompts;
 
   String get query => _query;
+
+  String? get groupFilter => _groupFilter;
 
   bool get isLoading => _isLoading;
 
@@ -34,7 +37,8 @@ class PromptsController extends ChangeNotifier {
   Future<void> load() async {
     final int requestId = ++_requestId;
     try {
-      final List<Prompt> result = await _repository.fetchAll(query: _query);
+      final List<Prompt> result =
+          await _repository.fetchAll(query: _query, groupId: _groupFilter);
       if (requestId != _requestId) {
         return;
       }
@@ -64,6 +68,15 @@ class PromptsController extends ChangeNotifier {
   }
 
   void clearSearch() => search('');
+
+  void filterByGroup(String? groupId) {
+    if (groupId == _groupFilter) {
+      return;
+    }
+    _groupFilter = groupId;
+    notifyListeners();
+    load();
+  }
 
   Future<Prompt?> findById(String id) => _repository.findById(id);
 

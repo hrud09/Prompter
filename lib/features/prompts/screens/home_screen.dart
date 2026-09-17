@@ -11,7 +11,10 @@ import '../../../shared/widgets/app_snack_bar.dart';
 import '../../../shared/widgets/bouncing_wrapper.dart';
 import '../../../shared/widgets/confirmation_dialog.dart';
 import '../../../shared/widgets/empty_state_view.dart';
+import '../../prompt_editor/widgets/new_group_sheet.dart';
+import '../controllers/groups_controller.dart';
 import '../controllers/prompts_controller.dart';
+import '../widgets/group_filter_bar.dart';
 import '../widgets/prompt_card.dart';
 import '../widgets/prompt_search_field.dart';
 
@@ -48,9 +51,20 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _copyPrompt(Prompt prompt) async {
     await HapticFeedback.lightImpact();
-    await Clipboard.setData(ClipboardData(text: prompt.promptText));
+    await Clipboard.setData(ClipboardData(text: prompt.previewVersion?.promptText ?? ''));
     if (mounted) {
       showAppSnackBar(context, 'Prompt copied');
+    }
+  }
+
+  Future<void> _createGroup() async {
+    await showNewGroupSheet(context);
+  }
+
+  Future<void> _openPromptDetails(Prompt prompt) async {
+    final String? groupId = await AppRouter.openPromptDetails(context, prompt);
+    if (groupId != null && mounted) {
+      context.read<PromptsController>().filterByGroup(groupId);
     }
   }
 
@@ -140,6 +154,27 @@ class _HomeScreenState extends State<HomeScreen> {
                   onClear: _clearSearch,
                 ),
               ),
+              Padding(
+                padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                child: Consumer2<GroupsController, PromptsController>(
+                  builder: (
+                    BuildContext context,
+                    GroupsController groupsController,
+                    PromptsController promptsController,
+                    Widget? child,
+                  ) {
+                    if (groupsController.groups.isEmpty) {
+                      return const SizedBox.shrink();
+                    }
+                    return GroupFilterBar(
+                      groups: groupsController.groups,
+                      selectedGroupId: promptsController.groupFilter,
+                      onSelect: promptsController.filterByGroup,
+                      onCreate: _createGroup,
+                    );
+                  },
+                ),
+              ),
               Expanded(
                 child: Consumer<PromptsController>(
                   builder: (
@@ -149,6 +184,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ) {
                     return _PromptsContent(
                       controller: controller,
+                      onOpenDetails: _openPromptDetails,
                       onEdit: _editPrompt,
                       onDelete: _deletePrompt,
                       onCopy: _copyPrompt,
@@ -167,12 +203,14 @@ class _HomeScreenState extends State<HomeScreen> {
 class _PromptsContent extends StatelessWidget {
   const _PromptsContent({
     required this.controller,
+    required this.onOpenDetails,
     required this.onEdit,
     required this.onDelete,
     required this.onCopy,
   });
 
   final PromptsController controller;
+  final ValueChanged<Prompt> onOpenDetails;
   final ValueChanged<Prompt> onEdit;
   final ValueChanged<Prompt> onDelete;
   final ValueChanged<Prompt> onCopy;
@@ -242,7 +280,7 @@ class _PromptsContent extends StatelessWidget {
           child: PromptCard(
             key: ValueKey<String>(prompt.id),
             prompt: prompt,
-            onOpen: () => AppRouter.openPromptDetails(context, prompt),
+            onOpen: () => onOpenDetails(prompt),
             onEdit: () => onEdit(prompt),
             onDelete: () => onDelete(prompt),
             onCopy: () => onCopy(prompt),

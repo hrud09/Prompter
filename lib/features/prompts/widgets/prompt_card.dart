@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../../app/theme/app_theme.dart';
 import '../../../models/prompt.dart';
+import '../../../models/prompt_group.dart';
 import '../../../shared/utils/date_formatter.dart';
 import '../../../shared/widgets/app_snack_bar.dart';
 import '../../../shared/widgets/bouncing_wrapper.dart';
@@ -33,8 +34,10 @@ class PromptCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final bool isDark = theme.brightness == Brightness.dark;
-    final List<String> previews =
-        prompt.allImages.take(_maxThumbnails).toList(growable: false);
+    final List<String> previews = (prompt.previewVersion?.allImages ?? const <String>[])
+        .take(_maxThumbnails)
+        .toList(growable: false);
+    final int imageCount = prompt.previewVersion?.imageCount ?? 0;
 
     return BouncingWrapper(
       onTap: onOpen,
@@ -168,6 +171,31 @@ class PromptCard extends StatelessWidget {
                   ),
                 ],
               ),
+              if (prompt.groups.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: <Widget>[
+                    for (final PromptGroup group in prompt.groups.take(2))
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: AppColors.royalIndigo.withValues(alpha: isDark ? 0.2 : 0.08),
+                          borderRadius: BorderRadius.circular(AppRadius.pill),
+                        ),
+                        child: Text(
+                          group.name,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: isDark ? AppColors.royalIndigoLight : AppColors.royalIndigo,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 10,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 10),
               Row(
                 children: <Widget>[
@@ -191,7 +219,7 @@ class PromptCard extends StatelessWidget {
                         ),
                       ),
                     ),
-                  if (prompt.hasImages)
+                  if (imageCount > 0)
                     Container(
                       margin: const EdgeInsets.only(right: AppSpacing.sm),
                       padding: const EdgeInsets.symmetric(
@@ -203,9 +231,29 @@ class PromptCard extends StatelessWidget {
                         borderRadius: BorderRadius.circular(AppRadius.pill),
                       ),
                       child: Text(
-                        _imageCountLabel(prompt.imageCount),
+                        _imageCountLabel(imageCount),
                         style: theme.textTheme.labelSmall?.copyWith(
                           color: isDark ? AppColors.electricBlueLight : AppColors.electricBlue,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ),
+                  if (prompt.versionCount > 1)
+                    Container(
+                      margin: const EdgeInsets.only(right: AppSpacing.sm),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.royalIndigo.withValues(alpha: isDark ? 0.25 : 0.1),
+                        borderRadius: BorderRadius.circular(AppRadius.pill),
+                      ),
+                      child: Text(
+                        '${prompt.versionCount} versions',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: isDark ? AppColors.royalIndigoLight : AppColors.royalIndigo,
                           fontWeight: FontWeight.w700,
                           fontSize: 11,
                         ),
@@ -246,7 +294,7 @@ class PromptCard extends StatelessWidget {
       return;
     }
     await HapticFeedback.lightImpact();
-    await Clipboard.setData(ClipboardData(text: prompt.promptText));
+    await Clipboard.setData(ClipboardData(text: prompt.previewVersion?.promptText ?? ''));
     if (context.mounted) {
       showAppSnackBar(context, 'Prompt copied');
     }

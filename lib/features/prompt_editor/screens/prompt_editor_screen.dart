@@ -3,9 +3,12 @@ import 'package:provider/provider.dart';
 
 import '../../../app/routes/app_router.dart';
 import '../../../app/theme/app_theme.dart';
+import '../../../data/repositories/prompt_group_repository.dart';
 import '../../../data/repositories/prompt_repository.dart';
+import '../../../data/repositories/prompt_version_repository.dart';
 import '../../../models/custom_input.dart';
 import '../../../models/prompt.dart';
+import '../../../models/prompt_group.dart';
 import '../../../shared/services/image_picker_service.dart';
 import '../../../shared/services/image_storage_service.dart';
 import '../../../shared/widgets/adaptive_body.dart';
@@ -13,12 +16,15 @@ import '../../../shared/widgets/app_snack_bar.dart';
 import '../../../shared/widgets/bouncing_wrapper.dart';
 import '../../../shared/widgets/confirmation_dialog.dart';
 import '../../../shared/widgets/section_label.dart';
+import '../../prompts/controllers/groups_controller.dart';
 import '../../prompts/controllers/prompts_controller.dart';
 import '../controllers/prompt_editor_controller.dart';
 import '../widgets/custom_input_sheet.dart';
 import '../widgets/custom_inputs_section.dart';
+import '../widgets/group_picker_section.dart';
 import '../widgets/image_source_sheet.dart';
 import '../widgets/prompt_images_section.dart';
+import '../widgets/version_tab_bar.dart';
 
 class PromptEditorScreen extends StatefulWidget {
   const PromptEditorScreen({super.key, this.prompt});
@@ -40,6 +46,8 @@ class _PromptEditorScreenState extends State<PromptEditorScreen> {
     super.initState();
     _controller = PromptEditorController(
       promptsController: context.read<PromptsController>(),
+      versionRepository: context.read<PromptVersionRepository>(),
+      groupRepository: context.read<PromptGroupRepository>(),
       imageStorage: context.read<ImageStorageService>(),
       imagePicker: context.read<ImagePickerService>(),
       existing: widget.prompt,
@@ -141,6 +149,64 @@ class _PromptEditorScreenState extends State<PromptEditorScreen> {
     }
   }
 
+  Future<void> _handleVersionMenuAction(int index, VersionTabMenuAction action) async {
+    switch (action) {
+      case VersionTabMenuAction.rename:
+        final String? label = await _promptForVersionLabel(
+          initial: _controller.versions[index].label,
+        );
+        if (label != null && label.isNotEmpty) {
+          _controller.renameVersion(index, label);
+        }
+      case VersionTabMenuAction.duplicate:
+        _controller.selectVersion(index);
+        _controller.addVersion(duplicateActive: true);
+      case VersionTabMenuAction.delete:
+        final bool confirmed = await showConfirmationDialog(
+          context,
+          title: 'Delete version?',
+          highlight: _controller.versions[index].label,
+          message: 'This version and its images will be removed.',
+          confirmLabel: 'Delete',
+          isDestructive: true,
+        );
+        if (confirmed) {
+          _controller.removeVersion(index);
+        }
+    }
+  }
+
+  Future<String?> _promptForVersionLabel({required String initial}) async {
+    final TextEditingController controller = TextEditingController(text: initial);
+    try {
+      return await showDialog<String>(
+        context: context,
+        builder: (BuildContext dialogContext) {
+          return AlertDialog(
+            title: const Text('Rename version'),
+            content: TextField(
+              controller: controller,
+              autofocus: true,
+              textCapitalization: TextCapitalization.words,
+            ),
+            actions: <Widget>[
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(controller.text.trim()),
+                child: const Text('Save'),
+              ),
+            ],
+          );
+        },
+      );
+    } finally {
+      controller.dispose();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -148,7 +214,12 @@ class _PromptEditorScreenState extends State<PromptEditorScreen> {
       onPopInvokedWithResult: _handlePop,
       child: Scaffold(
         appBar: AppBar(
-          title: Text(_controller.isEditing ? 'Edit Prompt' : 'New Prompt'),
+          title: ListenableBuilder(
+            listenable: _controller,
+            builder: (BuildContext context, Widget? child) {
+              return Text(_controller.isEditing ? 'Edit Prompt' : 'New Prompt');
+            },
+          ),
           actions: <Widget>[
             ListenableBuilder(
               listenable: _controller,
@@ -171,9 +242,9 @@ class _PromptEditorScreenState extends State<PromptEditorScreen> {
                 return Padding(
                   padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
                   child: BouncingWrapper(
-                    onTap: _handleSave,
+                    onTap: _controller.isLoading ? null : _handleSave,
                     child: FilledButton(
-                      onPressed: _handleSave,
+                      onPressed: _controller.isLoading ? null : _handleSave,
                       style: FilledButton.styleFrom(
                         backgroundColor: AppColors.sunnyAmber,
                         foregroundColor: const Color(0xFF1E1400),
@@ -195,17 +266,26 @@ class _PromptEditorScreenState extends State<PromptEditorScreen> {
           ],
         ),
         body: SafeArea(
-          child: AdaptiveBody(
-            child: Form(
-              key: _formKey,
-              autovalidateMode: _autovalidateMode,
-              child: _EditorForm(
-                controller: _controller,
-                onAddImages: _addImages,
-                onAddCustomInput: _addCustomInput,
-                onEditCustomInput: _editCustomInput,
-              ),
-            ),
+          child: ListenableBuilder(
+            listenable: _controller,
+            builder: (BuildContext context, Widget? child) {
+              if (_controller.isLoading) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              return AdaptiveBody(
+                child: Form(
+                  key: _formKey,
+                  autovalidateMode: _autovalidateMode,
+                  child: _EditorForm(
+                    controller: _controller,
+                    onAddImages: _addImages,
+                    onAddCustomInput: _addCustomInput,
+                    onEditCustomInput: _editCustomInput,
+                    onVersionMenuAction: _handleVersionMenuAction,
+                  ),
+                ),
+              );
+            },
           ),
         ),
       ),
@@ -219,12 +299,14 @@ class _EditorForm extends StatelessWidget {
     required this.onAddImages,
     required this.onAddCustomInput,
     required this.onEditCustomInput,
+    required this.onVersionMenuAction,
   });
 
   final PromptEditorController controller;
   final ValueChanged<PromptImageTarget> onAddImages;
   final VoidCallback onAddCustomInput;
   final ValueChanged<int> onEditCustomInput;
+  final void Function(int index, VersionTabMenuAction action) onVersionMenuAction;
 
   String? _requiredValidator(String? value, String message) {
     return (value ?? '').trim().isEmpty ? message : null;
@@ -278,14 +360,45 @@ class _EditorForm extends StatelessWidget {
           ),
         ),
         const SizedBox(height: AppSpacing.xl),
-        const SectionLabel('Prompt'),
+        Consumer<GroupsController>(
+          builder: (BuildContext context, GroupsController groupsController, Widget? child) {
+            return GroupPickerSection(
+              groups: groupsController.groups,
+              selectedGroupIds: controller.selectedGroupIds,
+              onToggle: controller.toggleGroup,
+              onCreate: (PromptGroup group) => controller.toggleGroup(group.id),
+            );
+          },
+        ),
+        const SizedBox(height: AppSpacing.xl),
+        SectionLabel(
+          'Versions',
+          trailing: Text(
+            '${controller.versions.length}',
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        VersionTabBar(
+          labels: <String>[
+            for (final PromptVersionDraft draft in controller.versions) draft.label,
+          ],
+          activeIndex: controller.activeVersionIndex,
+          onSelect: controller.selectVersion,
+          onAdd: () => controller.addVersion(),
+          onMenuAction: onVersionMenuAction,
+        ),
+        const SizedBox(height: AppSpacing.lg),
         Container(
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(AppRadius.field),
             boxShadow: AppColors.cardShadow(isDark: isDark),
           ),
           child: TextFormField(
-            controller: controller.promptTextController,
+            key: ValueKey<String>(controller.activeVersion.id),
+            controller: controller.activeVersion.promptTextController,
             minLines: 8,
             maxLines: null,
             keyboardType: TextInputType.multiline,
@@ -299,51 +412,39 @@ class _EditorForm extends StatelessWidget {
           ),
         ),
         const SizedBox(height: AppSpacing.xl),
-        ListenableBuilder(
-          listenable: controller,
-          builder: (BuildContext context, Widget? child) {
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                PromptImagesSection(
-                  label: 'Reference images',
-                  helperText: 'Images you use as input or inspiration.',
-                  images: controller.referenceImages,
-                  isBusy: controller.isImporting,
-                  onAdd: () => onAddImages(PromptImageTarget.reference),
-                  onOpen: (int index) => AppRouter.openImageViewer(
-                    context,
-                    imageFileNames: controller.referenceImages,
-                    initialIndex: index,
-                  ),
-                  onRemove: (int index) =>
-                      controller.removeImage(PromptImageTarget.reference, index),
-                ),
-                const SizedBox(height: AppSpacing.xl),
-                PromptImagesSection(
-                  label: 'Example outputs',
-                  helperText: 'Images produced with this prompt.',
-                  images: controller.outputImages,
-                  isBusy: controller.isImporting,
-                  onAdd: () => onAddImages(PromptImageTarget.output),
-                  onOpen: (int index) => AppRouter.openImageViewer(
-                    context,
-                    imageFileNames: controller.outputImages,
-                    initialIndex: index,
-                  ),
-                  onRemove: (int index) =>
-                      controller.removeImage(PromptImageTarget.output, index),
-                ),
-                const SizedBox(height: AppSpacing.xl),
-                CustomInputsSection(
-                  inputs: controller.customInputs,
-                  onAdd: onAddCustomInput,
-                  onEdit: onEditCustomInput,
-                  onRemove: controller.removeCustomInput,
-                ),
-              ],
-            );
-          },
+        PromptImagesSection(
+          label: 'Reference images',
+          helperText: 'Images you use as input or inspiration for this version.',
+          images: controller.referenceImages,
+          isBusy: controller.isImporting,
+          onAdd: () => onAddImages(PromptImageTarget.reference),
+          onOpen: (int index) => AppRouter.openImageViewer(
+            context,
+            imageFileNames: controller.referenceImages,
+            initialIndex: index,
+          ),
+          onRemove: (int index) => controller.removeImage(PromptImageTarget.reference, index),
+        ),
+        const SizedBox(height: AppSpacing.xl),
+        PromptImagesSection(
+          label: 'Example outputs',
+          helperText: 'Images produced with this version.',
+          images: controller.outputImages,
+          isBusy: controller.isImporting,
+          onAdd: () => onAddImages(PromptImageTarget.output),
+          onOpen: (int index) => AppRouter.openImageViewer(
+            context,
+            imageFileNames: controller.outputImages,
+            initialIndex: index,
+          ),
+          onRemove: (int index) => controller.removeImage(PromptImageTarget.output, index),
+        ),
+        const SizedBox(height: AppSpacing.xl),
+        CustomInputsSection(
+          inputs: controller.customInputs,
+          onAdd: onAddCustomInput,
+          onEdit: onEditCustomInput,
+          onRemove: controller.removeCustomInput,
         ),
       ],
     );

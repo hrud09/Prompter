@@ -3,39 +3,149 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:prompt_library/app/app.dart';
 import 'package:prompt_library/data/database/app_database.dart';
+import 'package:prompt_library/data/repositories/prompt_group_repository.dart';
 import 'package:prompt_library/data/repositories/prompt_repository.dart';
+import 'package:prompt_library/data/repositories/prompt_version_repository.dart';
+import 'package:prompt_library/features/prompts/controllers/groups_controller.dart';
 import 'package:prompt_library/features/prompts/controllers/prompts_controller.dart';
 import 'package:prompt_library/features/settings/controllers/theme_controller.dart';
 import 'package:prompt_library/models/prompt.dart';
+import 'package:prompt_library/models/prompt_group.dart';
+import 'package:prompt_library/models/prompt_version.dart';
 import 'package:prompt_library/shared/services/image_picker_service.dart';
 import 'package:prompt_library/shared/services/image_storage_service.dart';
 import 'package:provider/provider.dart';
 import 'package:provider/single_child_widget.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-class InMemoryPromptRepository extends PromptRepository {
-  InMemoryPromptRepository()
+class InMemoryPromptVersionRepository extends PromptVersionRepository {
+  InMemoryPromptVersionRepository()
       : super(database: AppDatabase(), imageStorage: ImageStorageService());
 
-  final Map<String, Prompt> store = <String, Prompt>{};
+  final Map<String, PromptVersion> versions = <String, PromptVersion>{};
 
-  @override
-  Future<List<Prompt>> fetchAll({String query = ''}) async {
-    final String needle = query.trim().toLowerCase();
-    final List<Prompt> matches = store.values.where((Prompt prompt) {
-      if (needle.isEmpty) {
-        return true;
-      }
-      return prompt.title.toLowerCase().contains(needle) ||
-          prompt.description.toLowerCase().contains(needle) ||
-          prompt.promptText.toLowerCase().contains(needle);
-    }).toList();
-    matches.sort((Prompt a, Prompt b) => b.updatedAt.compareTo(a.updatedAt));
+  List<PromptVersion> versionsFor(String promptId) {
+    final List<PromptVersion> matches =
+        versions.values.where((PromptVersion v) => v.promptId == promptId).toList();
+    matches.sort((PromptVersion a, PromptVersion b) => a.orderIndex.compareTo(b.orderIndex));
     return matches;
   }
 
   @override
-  Future<Prompt?> findById(String id) async => store[id];
+  Future<List<PromptVersion>> fetchForPrompt(String promptId) async => versionsFor(promptId);
+
+  @override
+  Future<void> save(PromptVersion version) async {
+    versions[version.id] = version;
+  }
+
+  @override
+  Future<void> saveAll(Iterable<PromptVersion> items) async {
+    for (final PromptVersion version in items) {
+      versions[version.id] = version;
+    }
+  }
+
+  @override
+  Future<void> deleteByIds(Iterable<String> versionIds) async {
+    for (final String id in versionIds) {
+      versions.remove(id);
+    }
+  }
+}
+
+class InMemoryPromptGroupRepository extends PromptGroupRepository {
+  InMemoryPromptGroupRepository() : super(database: AppDatabase());
+
+  final Map<String, PromptGroup> groups = <String, PromptGroup>{};
+  final Map<String, Set<String>> membership = <String, Set<String>>{};
+
+  @override
+  Future<List<PromptGroup>> fetchAll() async {
+    final List<PromptGroup> list = groups.values.toList();
+    list.sort((PromptGroup a, PromptGroup b) => a.name.compareTo(b.name));
+    return list;
+  }
+
+  @override
+  Future<void> save(PromptGroup group) async {
+    groups[group.id] = group;
+  }
+
+  @override
+  Future<void> delete(PromptGroup group) async {
+    groups.remove(group.id);
+    for (final Set<String> ids in membership.values) {
+      ids.remove(group.id);
+    }
+  }
+
+  @override
+  Future<List<PromptGroup>> fetchGroupsForPrompt(String promptId) async {
+    final Set<String> ids = membership[promptId] ?? const <String>{};
+    final List<PromptGroup> list =
+        groups.values.where((PromptGroup g) => ids.contains(g.id)).toList();
+    list.sort((PromptGroup a, PromptGroup b) => a.name.compareTo(b.name));
+    return list;
+  }
+
+  @override
+  Future<void> setGroupsForPrompt(String promptId, Iterable<String> groupIds) async {
+    membership[promptId] = groupIds.toSet();
+  }
+
+  @override
+  Future<void> removePromptFromAllGroups(String promptId) async {
+    membership.remove(promptId);
+  }
+}
+
+class InMemoryPromptRepository extends PromptRepository {
+  InMemoryPromptRepository(this._versionRepository, this._groupRepository)
+      : super(database: AppDatabase(), imageStorage: ImageStorageService());
+
+  final InMemoryPromptVersionRepository _versionRepository;
+  final InMemoryPromptGroupRepository _groupRepository;
+
+  final Map<String, Prompt> store = <String, Prompt>{};
+
+  @override
+  Future<List<Prompt>> fetchAll({String query = '', String? groupId}) async {
+    final String needle = query.trim().toLowerCase();
+    final List<Prompt> matches = store.values.where((Prompt prompt) {
+      if (groupId != null &&
+          !(_groupRepository.membership[prompt.id]?.contains(groupId) ?? false)) {
+        return false;
+      }
+      if (needle.isEmpty) {
+        return true;
+      }
+      final bool matchesVersionText = _versionRepository
+          .versionsFor(prompt.id)
+          .any((PromptVersion v) => v.promptText.toLowerCase().contains(needle));
+      return prompt.title.toLowerCase().contains(needle) ||
+          prompt.description.toLowerCase().contains(needle) ||
+          matchesVersionText;
+    }).toList();
+    matches.sort((Prompt a, Prompt b) => b.updatedAt.compareTo(a.updatedAt));
+    return Future.wait(matches.map(_attach));
+  }
+
+  @override
+  Future<Prompt?> findById(String id) async {
+    final Prompt? prompt = store[id];
+    return prompt == null ? null : _attach(prompt);
+  }
+
+  Future<Prompt> _attach(Prompt prompt) async {
+    final List<PromptVersion> versions = _versionRepository.versionsFor(prompt.id);
+    final List<PromptGroup> groups = await _groupRepository.fetchGroupsForPrompt(prompt.id);
+    return prompt.copyWith(
+      previewVersion: versions.isEmpty ? null : versions.first,
+      versionCount: versions.length,
+      groups: groups,
+    );
+  }
 
   @override
   Future<void> save(Prompt prompt) async {
@@ -45,10 +155,18 @@ class InMemoryPromptRepository extends PromptRepository {
   @override
   Future<void> delete(Prompt prompt) async {
     store.remove(prompt.id);
+    final List<String> versionIds =
+        _versionRepository.versionsFor(prompt.id).map((PromptVersion v) => v.id).toList();
+    await _versionRepository.deleteByIds(versionIds);
+    await _groupRepository.removePromptFromAllGroups(prompt.id);
   }
 }
 
-Future<Widget> buildTestApp(InMemoryPromptRepository repository) async {
+Future<Widget> buildTestApp(
+  InMemoryPromptRepository repository,
+  InMemoryPromptVersionRepository versionRepository,
+  InMemoryPromptGroupRepository groupRepository,
+) async {
   SharedPreferences.setMockInitialValues(<String, Object>{});
   final SharedPreferences preferences = await SharedPreferences.getInstance();
   return MultiProvider(
@@ -60,11 +178,16 @@ Future<Widget> buildTestApp(InMemoryPromptRepository repository) async {
         create: (BuildContext context) => ImagePickerService(),
       ),
       Provider<PromptRepository>.value(value: repository),
+      Provider<PromptVersionRepository>.value(value: versionRepository),
+      Provider<PromptGroupRepository>.value(value: groupRepository),
       ChangeNotifierProvider<ThemeController>(
         create: (BuildContext context) => ThemeController(preferences),
       ),
       ChangeNotifierProvider<PromptsController>(
         create: (BuildContext context) => PromptsController(repository)..load(),
+      ),
+      ChangeNotifierProvider<GroupsController>(
+        create: (BuildContext context) => GroupsController(groupRepository)..load(),
       ),
     ],
     child: const PromptLibraryApp(),
@@ -108,15 +231,21 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   late InMemoryPromptRepository repository;
+  late InMemoryPromptVersionRepository versionRepository;
+  late InMemoryPromptGroupRepository groupRepository;
 
   setUp(() {
-    repository = InMemoryPromptRepository();
+    versionRepository = InMemoryPromptVersionRepository();
+    groupRepository = InMemoryPromptGroupRepository();
+    repository = InMemoryPromptRepository(versionRepository, groupRepository);
   });
+
+  Future<Widget> buildApp() => buildTestApp(repository, versionRepository, groupRepository);
 
   testWidgets('shows the empty state when no prompts are saved', (
     WidgetTester tester,
   ) async {
-    await tester.pumpWidget(await buildTestApp(repository));
+    await tester.pumpWidget(await buildApp());
     await tester.pumpAndSettle();
 
     expect(find.text('No prompts yet'), findsOneWidget);
@@ -126,7 +255,7 @@ void main() {
   testWidgets('creates a prompt and lists it on the home screen', (
     WidgetTester tester,
   ) async {
-    await tester.pumpWidget(await buildTestApp(repository));
+    await tester.pumpWidget(await buildApp());
     await tester.pumpAndSettle();
 
     await createPrompt(
@@ -143,12 +272,13 @@ void main() {
       findsOneWidget,
     );
     expect(repository.store.length, 1);
+    expect(versionRepository.versions.length, 1);
   });
 
   testWidgets('refuses to save without a title and a prompt', (
     WidgetTester tester,
   ) async {
-    await tester.pumpWidget(await buildTestApp(repository));
+    await tester.pumpWidget(await buildApp());
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('Create'));
@@ -165,7 +295,7 @@ void main() {
   testWidgets('filters the list as the user types a search', (
     WidgetTester tester,
   ) async {
-    await tester.pumpWidget(await buildTestApp(repository));
+    await tester.pumpWidget(await buildApp());
     await tester.pumpAndSettle();
 
     await createPrompt(
@@ -210,7 +340,7 @@ void main() {
           .setMockMethodCallHandler(SystemChannels.platform, null);
     });
 
-    await tester.pumpWidget(await buildTestApp(repository));
+    await tester.pumpWidget(await buildApp());
     await tester.pumpAndSettle();
 
     await createPrompt(
@@ -257,7 +387,7 @@ void main() {
           .setMockMethodCallHandler(SystemChannels.platform, null);
     });
 
-    await tester.pumpWidget(await buildTestApp(repository));
+    await tester.pumpWidget(await buildApp());
     await tester.pumpAndSettle();
 
     await createPrompt(
@@ -297,7 +427,7 @@ void main() {
   testWidgets('edits an existing prompt without creating a duplicate', (
     WidgetTester tester,
   ) async {
-    await tester.pumpWidget(await buildTestApp(repository));
+    await tester.pumpWidget(await buildApp());
     await tester.pumpAndSettle();
 
     await createPrompt(
@@ -325,7 +455,7 @@ void main() {
     final Prompt updated = repository.store.values.single;
     expect(updated.id, original.id);
     expect(updated.createdAt, original.createdAt);
-    expect(updated.promptText, 'A cinematic portrait.');
+    expect(versionRepository.versionsFor(updated.id).single.promptText, 'A cinematic portrait.');
     expect(
       updated.updatedAt.isBefore(original.updatedAt),
       isFalse,
@@ -335,7 +465,7 @@ void main() {
   testWidgets('adds a custom input and shows it on the details screen', (
     WidgetTester tester,
   ) async {
-    await tester.pumpWidget(await buildTestApp(repository));
+    await tester.pumpWidget(await buildApp());
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('Create'));
@@ -346,7 +476,11 @@ void main() {
       promptText: 'A clean studio product shot.',
     );
 
-    await tester.ensureVisible(find.text('Add Input'));
+    await tester.dragUntilVisible(
+      find.text('Add Input'),
+      find.byType(ListView).first,
+      const Offset(0, -300),
+    );
     await tester.pumpAndSettle();
     await tester.tap(find.text('Add Input'));
     await tester.pumpAndSettle();
@@ -373,7 +507,7 @@ void main() {
     expect(find.text('Model'), findsOneWidget);
     expect(find.text('Midjourney'), findsOneWidget);
     expect(
-      repository.store.values.single.customInputs.single.name,
+      versionRepository.versions.values.single.customInputs.single.name,
       'Model',
     );
   });
@@ -381,7 +515,7 @@ void main() {
   testWidgets('deletes a prompt after confirmation', (
     WidgetTester tester,
   ) async {
-    await tester.pumpWidget(await buildTestApp(repository));
+    await tester.pumpWidget(await buildApp());
     await tester.pumpAndSettle();
 
     await createPrompt(
@@ -404,12 +538,13 @@ void main() {
     expect(find.text('Prompt deleted'), findsOneWidget);
     expect(find.text('No prompts yet'), findsOneWidget);
     expect(repository.store, isEmpty);
+    expect(versionRepository.versions, isEmpty);
   });
 
   testWidgets('keeps saved prompts when the app is started again', (
     WidgetTester tester,
   ) async {
-    await tester.pumpWidget(await buildTestApp(repository));
+    await tester.pumpWidget(await buildApp());
     await tester.pumpAndSettle();
 
     await createPrompt(
@@ -422,7 +557,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpAndSettle();
 
-    await tester.pumpWidget(await buildTestApp(repository));
+    await tester.pumpWidget(await buildApp());
     await tester.pumpAndSettle();
 
     expect(find.text('Cinematic Character'), findsOneWidget);
@@ -432,7 +567,7 @@ void main() {
   testWidgets('warns before discarding unsaved editor changes', (
     WidgetTester tester,
   ) async {
-    await tester.pumpWidget(await buildTestApp(repository));
+    await tester.pumpWidget(await buildApp());
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('Create'));
@@ -460,7 +595,7 @@ void main() {
   testWidgets('leaves an untouched editor without asking', (
     WidgetTester tester,
   ) async {
-    await tester.pumpWidget(await buildTestApp(repository));
+    await tester.pumpWidget(await buildApp());
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('Create'));
@@ -475,19 +610,29 @@ void main() {
   testWidgets('renders prompts whose image files are unavailable', (
     WidgetTester tester,
   ) async {
+    final DateTime createdAt = DateTime(2026, 9, 1);
+    final DateTime updatedAt = DateTime(2026, 9, 2);
     final Prompt prompt = Prompt(
       id: 'stored-prompt',
       title: 'Has images',
       description: 'Its files are gone.',
+      createdAt: createdAt,
+      updatedAt: updatedAt,
+    );
+    repository.store[prompt.id] = prompt;
+    versionRepository.versions['stored-prompt-v1'] = PromptVersion(
+      id: 'stored-prompt-v1',
+      promptId: prompt.id,
+      label: 'Version 1',
+      orderIndex: 0,
       promptText: 'A prompt whose images went missing.',
       referenceImages: const <String>['missing-one.jpg'],
       outputImages: const <String>['missing-two.jpg'],
-      createdAt: DateTime(2026, 9, 1),
-      updatedAt: DateTime(2026, 9, 2),
+      createdAt: createdAt,
+      updatedAt: updatedAt,
     );
-    repository.store[prompt.id] = prompt;
 
-    await tester.pumpWidget(await buildTestApp(repository));
+    await tester.pumpWidget(await buildApp());
     await tester.pumpAndSettle();
 
     expect(find.text('Has images'), findsOneWidget);

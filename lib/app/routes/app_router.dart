@@ -25,9 +25,12 @@ class AppRouter {
     }
   }
 
-  static Future<void> openPromptDetails(BuildContext context, Prompt prompt) {
-    return Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
+  /// Opens the prompt's details screen. If the user tapped a group chip
+  /// inside it, returns that group's id so the caller can apply it as a
+  /// filter (e.g. on the home list); otherwise returns null.
+  static Future<String?> openPromptDetails(BuildContext context, Prompt prompt) {
+    return Navigator.of(context).push<String>(
+      MaterialPageRoute<String>(
         builder: (BuildContext context) => PromptDetailsScreen(prompt: prompt),
       ),
     );
