@@ -8,7 +8,6 @@ import '../../../data/repositories/prompt_repository.dart';
 import '../../../models/prompt.dart';
 import '../../../shared/widgets/adaptive_body.dart';
 import '../../../shared/widgets/app_snack_bar.dart';
-import '../../../shared/widgets/bouncing_wrapper.dart';
 import '../../../shared/widgets/confirmation_dialog.dart';
 import '../../../shared/widgets/empty_state_view.dart';
 import '../../prompt_editor/widgets/new_group_sheet.dart';
@@ -115,26 +114,6 @@ class _HomeScreenState extends State<HomeScreen> {
             color: isDark ? null : const Color(0xFF0F172A),
           ),
         ),
-        actions: <Widget>[
-          BouncingWrapper(
-            onTap: _searchFocusNode.requestFocus,
-            child: Container(
-              margin: const EdgeInsets.only(right: AppSpacing.md),
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: isDark
-                    ? theme.colorScheme.surfaceContainerHigh
-                    : AppColors.electricBlue.withValues(alpha: 0.1),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(
-                Icons.search_rounded,
-                size: 20,
-                color: isDark ? Colors.white : AppColors.electricBlue,
-              ),
-            ),
-          ),
-        ],
       ),
       body: SafeArea(
         child: AdaptiveBody(
